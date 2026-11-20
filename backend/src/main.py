@@ -3,12 +3,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
-from .routes import auth,sample,batch,evidence,audit
+from .routes import auth,sample,batch,evidence,audit,fx
 from .middlewares.audit import AuditMiddleware
 from .middlewares.request_id import RequestIdMiddleware
 from .config.database import engine
 from sqlalchemy import text
-from .services.batch import queue
+from .services.queue import queue
 @asynccontextmanager
 async def lifespan(app):
     if os.getenv('SEED_DEMO','true')=='true':
@@ -29,4 +29,4 @@ async def database_error(request:Request,exc):
 def health():
     with engine.connect() as conn:conn.execute(text('SELECT 1'))
     queue.ping();return {'status':'ok'}
-for router in (auth.router,sample.router,batch.router,evidence.router,audit.router):app.include_router(router)
+for router in (auth.router,sample.router,batch.router,evidence.router,audit.router,fx.router):app.include_router(router)

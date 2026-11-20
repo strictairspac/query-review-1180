@@ -5,22 +5,35 @@ from src.models.sample import Sample
 from src.models.batch import Batch
 from src.models.evidence import Evidence
 from src.models.audit import Audit
+from src.models.fx_rate import FxRate
 from src.utils.password import hash_password
 ORIGINAL="SELECT DISTINCT i.customer, (SELECT SUM(j.amount) FROM invoices j WHERE j.customer=i.customer AND j.temperature<=8) AS total FROM invoices i WHERE (SELECT SUM(k.amount) FROM invoices k WHERE k.customer=i.customer AND k.temperature<=8)>100 ORDER BY customer"
 def seed():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE IF NOT EXISTS invoices (invoice_id INTEGER PRIMARY KEY, customer TEXT NOT NULL, route TEXT NOT NULL, amount NUMERIC(12,2) NOT NULL, temperature NUMERIC(4,1) NOT NULL, status TEXT NOT NULL)"))
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'CNY'"))
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS transport_date DATE"))
+        conn.execute(text("ALTER TABLE invoices ALTER COLUMN transport_date SET DEFAULT DATE '2026-11-01'"))
         conn.execute(text("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='query_reader') THEN CREATE ROLE query_reader NOLOGIN; END IF; END $$"))
         conn.execute(text('GRANT SELECT ON invoices TO query_reader'))
-        conn.execute(text("INSERT INTO invoices SELECT i, (ARRAY['澄港海产','南港鲜食','北湾冷运'])[1+(i%3)], (ARRAY['东线','西线'])[1+(i%2)], 35+(i%17)*7, 2+(i%9), CASE WHEN i%7=0 THEN 'pending' ELSE 'settled' END FROM generate_series(1,600) i ON CONFLICT DO NOTHING"))
+        conn.execute(text("INSERT INTO invoices SELECT i, (ARRAY['澄港海产','南港鲜食','北湾冷运'])[1+(i%3)], (ARRAY['东线','西线'])[1+(i%2)], 35+(i%17)*7, 2+(i%9), CASE WHEN i%7=0 THEN 'pending' ELSE 'settled' END, CASE WHEN i%4=0 THEN 'USD' WHEN i%9=0 THEN 'EUR' ELSE 'CNY' END, (DATE '2026-11-01' + (i%14)) FROM generate_series(1,600) i ON CONFLICT DO NOTHING"))
+        conn.execute(text("UPDATE invoices SET transport_date=DATE '2026-11-01' WHERE transport_date IS NULL"))
+        conn.execute(text("ALTER TABLE invoices ALTER COLUMN transport_date SET NOT NULL"))
     with Session() as db:
         for role in ('admin','operator','viewer'):
             email=role+'@chenggang.test'
             if not db.scalar(select(User).where(User.email==email)):db.add(User(email=email,role=role,password_hash=hash_password('ColdChain!17')))
-        samples=[('低温结算汇总','09:00 澄港海产、南港鲜食、北湾冷运的温控合格运费，600 行固定账单。',ORIGINAL),('路线平均费用','按路线观察已结算记录的均值；用 ROUND 保持两位小数。',"SELECT route, ROUND(AVG(amount),2) AS average FROM invoices WHERE status='settled' GROUP BY route ORDER BY route"),('异常温控账单','温度大于8度的账单，为差异复核提供反例。','SELECT customer, COUNT(*) AS count FROM invoices WHERE temperature > 8 GROUP BY customer ORDER BY customer')]
+        samples=[('低温结算汇总','09:00 澄港海产、南港鲜食、北湾冷运的温控合格运费，600 行固定账单，外币按运输日汇率折成人民币。',ORIGINAL),('路线平均费用','按路线观察已结算记录的均值；用 ROUND 保持两位小数。',"SELECT route, ROUND(AVG(amount),2) AS average FROM invoices WHERE status='settled' GROUP BY route ORDER BY route"),('异常温控账单','温度大于8度的账单，为差异复核提供反例。','SELECT customer, COUNT(*) AS count FROM invoices WHERE temperature > 8 GROUP BY customer ORDER BY customer')]
         for name,desc,sql in samples:
             if not db.scalar(select(Sample).where(Sample.name==name)):db.add(Sample(name=name,description=desc,original_sql=sql))
         db.commit()
-        return {t:db.execute(text('SELECT COUNT(*) FROM '+t)).scalar() for t in ('users','samples','batches','evidence','invoices')}
+        rates=[('USD',7.10),('EUR',7.80)]
+        for cur,base in rates:
+            for offset in range(14):
+                day=f'2026-11-{1+offset:02d}'
+                if not db.scalar(select(FxRate).where(FxRate.currency==cur,FxRate.rate_date==day)):
+                    db.add(FxRate(currency=cur,rate_date=day,rate=round(base+offset*0.01,6)))
+        db.commit()
+        return {t:db.execute(text('SELECT COUNT(*) FROM '+t)).scalar() for t in ('users','samples','batches','evidence','invoices','fx_rates')}
 if __name__=='__main__':print(seed())
